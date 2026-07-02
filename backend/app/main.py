@@ -13,17 +13,6 @@ from seed_roadmap import seed_database
 
 app = FastAPI(title="AI Engineer Classroom API")
 
-Base.metadata.create_all(bind=engine)
-
-@app.on_event("startup")
-def startup_event():
-    db = SessionLocal()
-    try:
-        if not db.query(Month).first():
-            seed_database()
-    finally:
-        db.close()
-
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -42,6 +31,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+Base.metadata.create_all(bind=engine)
+
+@app.on_event("startup")
+def startup_event():
+    db = SessionLocal()
+    try:
+        if not db.query(Month).first():
+            seed_database()
+    finally:
+        db.close()
 
 app.include_router(classroom.router, prefix="/api")
 
