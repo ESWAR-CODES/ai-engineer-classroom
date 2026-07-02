@@ -1,12 +1,28 @@
 import os
+import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import classroom
-from .database import engine, Base
+from .database import engine, Base, SessionLocal
+from .models import Month
+
+backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if backend_dir not in sys.path:
+    sys.path.append(backend_dir)
+from seed_roadmap import seed_database
 
 app = FastAPI(title="AI Engineer Classroom API")
 
 Base.metadata.create_all(bind=engine)
+
+@app.on_event("startup")
+def startup_event():
+    db = SessionLocal()
+    try:
+        if not db.query(Month).first():
+            seed_database()
+    finally:
+        db.close()
 
 origins = [
     "http://localhost:3000",
