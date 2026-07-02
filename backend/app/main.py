@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import classroom
@@ -5,14 +6,18 @@ from .database import engine, Base
 
 app = FastAPI(title="AI Engineer Classroom API")
 
-# Create database tables automatically (fallback)
 Base.metadata.create_all(bind=engine)
 
-# Configure CORS for Next.js app (running on localhost:3000)
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
+
+env_origins = os.getenv("ALLOWED_ORIGINS")
+if env_origins:
+    origins.extend([origin.strip() for origin in env_origins.split(",")])
+else:
+    origins.append("*")
 
 app.add_middleware(
     CORSMiddleware,
