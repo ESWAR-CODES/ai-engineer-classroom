@@ -6,11 +6,6 @@ from .routers import classroom
 from .database import engine, Base, SessionLocal
 from .models import Month
 
-backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if backend_dir not in sys.path:
-    sys.path.append(backend_dir)
-from seed_roadmap import seed_database
-
 app = FastAPI(title="AI Engineer Classroom API")
 
 origins = [
@@ -27,7 +22,7 @@ else:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=False if "*" in origins else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -36,12 +31,20 @@ Base.metadata.create_all(bind=engine)
 
 @app.on_event("startup")
 def startup_event():
-    db = SessionLocal()
     try:
-        if not db.query(Month).first():
-            seed_database()
-    finally:
-        db.close()
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if backend_dir not in sys.path:
+            sys.path.append(backend_dir)
+        from seed_roadmap import seed_database
+        db = SessionLocal()
+        try:
+            if not db.query(Month).first():
+                seed_database()
+        finally:
+            db.close()
+    except Exception:
+        import traceback
+        traceback.print_exc()
 
 app.include_router(classroom.router, prefix="/api")
 
