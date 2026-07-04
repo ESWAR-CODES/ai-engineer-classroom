@@ -11,18 +11,18 @@ app = FastAPI(title="AI Engineer Classroom API")
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://ai-class-taupe.vercel.app",
+    "https://ai-engineer-classroom.vercel.app",
 ]
 
 env_origins = os.getenv("ALLOWED_ORIGINS")
 if env_origins:
     origins.extend([origin.strip() for origin in env_origins.split(",")])
-else:
-    origins.append("*")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=False if "*" in origins else True,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
