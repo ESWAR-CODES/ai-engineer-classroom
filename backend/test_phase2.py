@@ -2,33 +2,39 @@ import unittest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from app.main import app
-from app.database import SessionLocal, Base, engine
-from app.models import Month, Week, Topic
+from app.database import db
 from app.services import llm_generation
 
 class TestClassroomAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Create test DB tables
-        Base.metadata.create_all(bind=engine)
         cls.client = TestClient(app)
-        cls.db = SessionLocal()
-
-        # Seed minimal test data if not already present
-        if not cls.db.query(Month).first():
-            m = Month(number=1, title="Test Month", focus="Testing", build_target="A Test API")
-            cls.db.add(m)
-            cls.db.flush()
-            w = Week(month_id=m.id, number=1, title="Test Week")
-            cls.db.add(w)
-            cls.db.flush()
-            t = Topic(week_id=w.id, content="Variables and structures", category="learn", order_num=1)
-            cls.db.add(t)
-            cls.db.commit()
+        cls.db = db
+        if cls.db["months"].count_documents({}) == 0:
+            cls.db["months"].insert_one({
+                "id": 1,
+                "number": 1,
+                "title": "Test Month",
+                "focus": "Testing",
+                "build_target": "A Test API"
+            })
+            cls.db["weeks"].insert_one({
+                "id": 1,
+                "month_id": 1,
+                "number": 1,
+                "title": "Test Week"
+            })
+            cls.db["topics"].insert_one({
+                "id": 1,
+                "week_id": 1,
+                "content": "Variables and structures",
+                "category": "learn",
+                "order_num": 1
+            })
 
     @classmethod
     def tearDownClass(cls):
-        cls.db.close()
+        pass
 
     def test_get_months(self):
         response = self.client.get("/api/months")
@@ -53,17 +59,13 @@ class TestClassroomAPI(unittest.TestCase):
         self.assertIn("completed", data[0])
 
     def test_toggle_topic_completion(self):
-        # Get first topic
-        topic = self.db.query(Topic).first()
+        topic = self.db["topics"].find_one()
         self.assertIsNotNone(topic)
-
-        # Toggle to True
-        response = self.client.post(f"/api/topics/{topic.id}/toggle")
+        topic_id = topic["id"]
+        response = self.client.post(f"/api/topics/{topic_id}/toggle")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["completed"])
-
-        # Toggle to False
-        response = self.client.post(f"/api/topics/{topic.id}/toggle")
+        response = self.client.post(f"/api/topics/{topic_id}/toggle")
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["completed"])
 
@@ -75,21 +77,18 @@ class TestClassroomAPI(unittest.TestCase):
         self.assertIn("completed_topics", data)
 
     def test_update_current_lesson(self):
-        topic = self.db.query(Topic).first()
-        response = self.client.post("/api/classroom/current-lesson", json={"topic_id": topic.id})
+        topic = self.db["topics"].find_one()
+        topic_id = topic["id"]
+        response = self.client.post("/api/classroom/current-lesson", json={"topic_id": topic_id})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["current_topic_id"], topic.id)
+        self.assertEqual(response.json()["current_topic_id"], topic_id)
 
     @patch("google.genai.Client")
     def test_gemini_generation_mock(self, mock_client_class):
-        # Setup mock client
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
-        
-        # Setup mock response
         mock_response = MagicMock()
         mock_response.text = """{
-            "voice_script": "Welcome students to variables learning.",
             "technical_notes": "# Variables\\n\\nNotes on variables.",
             "quiz": [
                 {
@@ -100,12 +99,8 @@ class TestClassroomAPI(unittest.TestCase):
             ]
         }"""
         mock_client.models.generate_content.return_value = mock_response
-
-        # Execute call
         result = llm_generation.generate_material_for_topic("Variables")
-
-        # Assert correct schema payload validation
-        self.assertEqual(result.voice_script, "Welcome students to variables learning.")
+        self.assertEqual(result.technical_notes, "# Variables\n\nNotes on variables.")
         self.assertEqual(len(result.quiz), 1)
         self.assertEqual(result.quiz[0].correct_answer_idx, 1)
 

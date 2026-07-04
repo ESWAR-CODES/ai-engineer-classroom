@@ -2,18 +2,14 @@ import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 from ..database import get_db
-from ..models import Month, Week, Topic, UserProgress, UserSettings
+from ..models import Topic
 from ..services.llm_generation import generate_material_for_topic, LessonMaterial
-from ..services.media_orchestrator import generate_vtt_subtitles
 from ..services.vector_search import semantic_search_topics
 from ..services.ml_reranker import hybrid_rerank
 from ..services.capstone_orchestrator import generate_capstone_blueprint
 
 router = APIRouter()
-
-# --- Pydantic Schemas for Requests and Responses ---
 
 class TopicSchema(BaseModel):
     id: int
@@ -61,123 +57,122 @@ class ProgressStatusResponse(BaseModel):
 class LessonUpdateUpdate(BaseModel):
     topic_id: Optional[int] = None
 
-# --- API Endpoints ---
-
 @router.get("/months", response_model=List[MonthSchema])
-def get_months(db: Session = Depends(get_db)):
-    """Fetch all months along with nested weeks and topics (with completion status)."""
-    months = db.query(Month).order_by(Month.number).all()
+def get_months(db = Depends(get_db)):
+    months = list(db["months"].find().sort("number", 1))
     result = []
     for m in months:
         weeks_list = []
-        for w in m.weeks:
+        weeks = list(db["weeks"].find({"month_id": m["id"]}).sort("number", 1))
+        for w in weeks:
             topics_list = []
-            for t in w.topics:
-                completed = t.progress.completed if t.progress else False
+            topics = list(db["topics"].find({"week_id": w["id"]}).sort("order_num", 1))
+            for t in topics:
+                progress = db["user_progress"].find_one({"topic_id": t["id"]})
+                completed = progress["completed"] if progress else False
                 topics_list.append(TopicSchema(
-                    id=t.id,
-                    week_id=t.week_id,
-                    content=t.content,
-                    category=t.category,
-                    order_num=t.order_num,
+                    id=t["id"],
+                    week_id=t["week_id"],
+                    content=t["content"],
+                    category=t["category"],
+                    order_num=t["order_num"],
                     completed=completed
                 ))
             weeks_list.append(WeekSchema(
-                id=w.id,
-                month_id=w.month_id,
-                number=w.number,
-                title=w.title,
+                id=w["id"],
+                month_id=w["month_id"],
+                number=w["number"],
+                title=w["title"],
                 topics=topics_list
             ))
         result.append(MonthSchema(
-            id=m.id,
-            number=m.number,
-            title=m.title,
-            focus=m.focus,
-            build_target=m.build_target,
+            id=m["id"],
+            number=m["number"],
+            title=m["title"],
+            focus=m.get("focus"),
+            build_target=m.get("build_target"),
             weeks=weeks_list
         ))
     return result
 
 @router.get("/weeks", response_model=List[WeekSchema])
-def get_weeks(db: Session = Depends(get_db)):
-    """Fetch all weeks along with nested topics (with completion status)."""
-    weeks = db.query(Week).order_by(Week.number).all()
+def get_weeks(db = Depends(get_db)):
+    weeks = list(db["weeks"].find().sort("number", 1))
     result = []
     for w in weeks:
         topics_list = []
-        for t in w.topics:
-            completed = t.progress.completed if t.progress else False
+        topics = list(db["topics"].find({"week_id": w["id"]}).sort("order_num", 1))
+        for t in topics:
+            progress = db["user_progress"].find_one({"topic_id": t["id"]})
+            completed = progress["completed"] if progress else False
             topics_list.append(TopicSchema(
-                id=t.id,
-                week_id=t.week_id,
-                content=t.content,
-                category=t.category,
-                order_num=t.order_num,
+                id=t["id"],
+                week_id=t["week_id"],
+                content=t["content"],
+                category=t["category"],
+                order_num=t["order_num"],
                 completed=completed
             ))
         result.append(WeekSchema(
-            id=w.id,
-            month_id=w.month_id,
-            number=w.number,
-            title=w.title,
+            id=w["id"],
+            month_id=w["month_id"],
+            number=w["number"],
+            title=w["title"],
             topics=topics_list
         ))
     return result
 
 @router.get("/topics", response_model=List[TopicSchema])
-def get_topics(db: Session = Depends(get_db)):
-    """Fetch all topics with their individual completion status."""
-    topics = db.query(Topic).order_by(Topic.week_id, Topic.order_num).all()
+def get_topics(db = Depends(get_db)):
+    topics = list(db["topics"].find().sort([("week_id", 1), ("order_num", 1)]))
     result = []
     for t in topics:
-        completed = t.progress.completed if t.progress else False
+        progress = db["user_progress"].find_one({"topic_id": t["id"]})
+        completed = progress["completed"] if progress else False
         result.append(TopicSchema(
-            id=t.id,
-            week_id=t.week_id,
-            content=t.content,
-            category=t.category,
-            order_num=t.order_num,
+            id=t["id"],
+            week_id=t["week_id"],
+            content=t["content"],
+            category=t["category"],
+            order_num=t["order_num"],
             completed=completed
         ))
     return result
 
 @router.post("/topics/{topic_id}/toggle", response_model=ToggleResponse)
-def toggle_topic(topic_id: int, db: Session = Depends(get_db)):
-    """Toggle a topic's completion status. Creates a progress record if none exists."""
-    topic = db.query(Topic).filter(Topic.id == topic_id).first()
+def toggle_topic(topic_id: int, db = Depends(get_db)):
+    topic = db["topics"].find_one({"id": topic_id})
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-
-    progress = db.query(UserProgress).filter(UserProgress.topic_id == topic_id).first()
+    progress = db["user_progress"].find_one({"topic_id": topic_id})
     if not progress:
-        progress = UserProgress(topic_id=topic_id, completed=True, completed_at=datetime.datetime.utcnow())
-        db.add(progress)
+        progress = {
+            "topic_id": topic_id,
+            "completed": True,
+            "completed_at": datetime.datetime.utcnow()
+        }
+        db["user_progress"].insert_one(progress)
     else:
-        progress.completed = not progress.completed
-        if progress.completed:
-            progress.completed_at = datetime.datetime.utcnow()
-        else:
-            progress.completed_at = None
-    db.commit()
-    db.refresh(progress)
-
+        new_completed = not progress["completed"]
+        completed_at = datetime.datetime.utcnow() if new_completed else None
+        db["user_progress"].update_one(
+            {"topic_id": topic_id},
+            {"$set": {"completed": new_completed, "completed_at": completed_at}}
+        )
+        progress = db["user_progress"].find_one({"topic_id": topic_id})
     return ToggleResponse(
-        topic_id=progress.topic_id,
-        completed=progress.completed,
-        completed_at=progress.completed_at
+        topic_id=progress["topic_id"],
+        completed=progress["completed"],
+        completed_at=progress.get("completed_at")
     )
 
 @router.get("/classroom/status", response_model=ProgressStatusResponse)
-def get_classroom_status(db: Session = Depends(get_db)):
-    """Returns general progress analytics (total, completed, completion percentage, active lesson)."""
-    total_topics = db.query(Topic).count()
-    completed_topics = db.query(UserProgress).filter(UserProgress.completed == True).count()
+def get_classroom_status(db = Depends(get_db)):
+    total_topics = db["topics"].count_documents({})
+    completed_topics = db["user_progress"].count_documents({"completed": True})
     progress_percent = (completed_topics / total_topics * 100) if total_topics > 0 else 0.0
-
-    settings = db.query(UserSettings).first()
-    current_topic_id = settings.current_topic_id if settings else None
-
+    settings = db["user_settings"].find_one()
+    current_topic_id = settings.get("current_topic_id") if settings else None
     return ProgressStatusResponse(
         total_topics=total_topics,
         completed_topics=completed_topics,
@@ -186,61 +181,65 @@ def get_classroom_status(db: Session = Depends(get_db)):
     )
 
 @router.post("/classroom/current-lesson")
-def update_current_lesson(update: LessonUpdateUpdate, db: Session = Depends(get_db)):
-    """Updates the user's active/current lesson tracking pointer."""
+def update_current_lesson(update: LessonUpdateUpdate, db = Depends(get_db)):
     if update.topic_id is not None:
-        topic = db.query(Topic).filter(Topic.id == update.topic_id).first()
+        topic = db["topics"].find_one({"id": update.topic_id})
         if not topic:
             raise HTTPException(status_code=404, detail="Topic not found")
-
-    settings = db.query(UserSettings).first()
+    settings = db["user_settings"].find_one()
     if not settings:
-        settings = UserSettings(current_topic_id=update.topic_id)
-        db.add(settings)
+        db["user_settings"].insert_one({
+            "current_topic_id": update.topic_id,
+            "last_active_at": datetime.datetime.utcnow()
+        })
     else:
-        settings.current_topic_id = update.topic_id
-
-    db.commit()
-    return {"current_topic_id": settings.current_topic_id}
+        db["user_settings"].update_one(
+            {},
+            {"$set": {
+                "current_topic_id": update.topic_id,
+                "last_active_at": datetime.datetime.utcnow()
+            }}
+        )
+    return {"current_topic_id": update.topic_id}
 
 @router.get("/topics/{topic_id}/material", response_model=LessonMaterial)
-def get_topic_material(topic_id: int, db: Session = Depends(get_db)):
-    """Fetches topic by ID and runs Gemini content generation to produce structured lesson material."""
-    topic = db.query(Topic).filter(Topic.id == topic_id).first()
+def get_topic_material(topic_id: int, db = Depends(get_db)):
+    topic = db["topics"].find_one({"id": topic_id})
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-        
+    cached = db["curriculum_cache"].find_one({"topic_id": topic_id})
+    if cached:
+        return LessonMaterial(
+            technical_notes=cached["technical_notes"],
+            quiz=cached["quiz"]
+        )
     try:
-        material = generate_material_for_topic(topic.content)
+        material = generate_material_for_topic(topic["content"])
+        db["curriculum_cache"].insert_one({
+            "topic_id": topic_id,
+            "technical_notes": material.technical_notes,
+            "quiz": [q.model_dump() for q in material.quiz]
+        })
         return material
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM material generation failed: {str(e)}")
 
 @router.get("/topics/{topic_id}/subtitles")
-def get_topic_subtitles(topic_id: int, db: Session = Depends(get_db)):
-    """Generates WebVTT subtitles dynamically for the selected topic's voice script."""
-    topic = db.query(Topic).filter(Topic.id == topic_id).first()
+def get_topic_subtitles(topic_id: int, db = Depends(get_db)):
+    topic = db["topics"].find_one({"id": topic_id})
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
-        
-    try:
-        material = generate_material_for_topic(topic.content)
-        vtt_content = generate_vtt_subtitles(material.voice_script)
-        return Response(content=vtt_content, media_type="text/vtt")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate subtitles: {str(e)}")
+    vtt_content = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:10.000\nVideo lecture content disabled. Please refer to Technical Notes below."
+    return Response(content=vtt_content, media_type="text/vtt")
 
 @router.get("/classroom/search")
-def search_classroom_topics(q: str, db: Session = Depends(get_db)):
-    """Search for relevant curriculum topics using semantic embedding lookup + ML hybrid re-ranking."""
+def search_classroom_topics(q: str, db = Depends(get_db)):
     if not q.strip():
         return []
-        
     try:
-        all_topics = db.query(Topic).all()
+        all_topics = [Topic(t["id"], t["week_id"], t["content"], t["category"], t["order_num"]) for t in db["topics"].find()]
         candidates = semantic_search_topics(q, all_topics, top_k=15)
         ranked_results = hybrid_rerank(q, candidates, top_k=8)
-        
         return [
             {
                 "id": t.id,
@@ -248,10 +247,10 @@ def search_classroom_topics(q: str, db: Session = Depends(get_db)):
                 "content": t.content,
                 "category": t.category,
                 "order_num": t.order_num,
-                "completed": db.query(UserProgress).filter(
-                    UserProgress.topic_id == t.id,
-                    UserProgress.completed == True
-                ).first() is not None
+                "completed": db["user_progress"].find_one({
+                    "topic_id": t.id,
+                    "completed": True
+                }) is not None
             }
             for t in ranked_results
         ]
@@ -259,16 +258,12 @@ def search_classroom_topics(q: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Search pipeline failed: {str(e)}")
 
 @router.post("/classroom/capstone")
-def create_personalized_capstone(db: Session = Depends(get_db)):
-    """Analyze user progress logs and generate a custom portfolio Capstone blueprint."""
+def create_personalized_capstone(db = Depends(get_db)):
     try:
-        completed_topics = db.query(Topic).join(
-            UserProgress, Topic.id == UserProgress.topic_id
-        ).filter(
-            UserProgress.completed == True
-        ).all()
-        
-        topic_titles = [t.content for t in completed_topics]
+        completed_progress = list(db["user_progress"].find({"completed": True}))
+        completed_topic_ids = [p["topic_id"] for p in completed_progress]
+        completed_topics = list(db["topics"].find({"id": {"$in": completed_topic_ids}}))
+        topic_titles = [t["content"] for t in completed_topics]
         blueprint_content = generate_capstone_blueprint(topic_titles)
         return {"blueprint": blueprint_content}
     except Exception as e:

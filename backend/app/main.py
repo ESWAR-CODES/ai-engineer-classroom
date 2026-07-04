@@ -3,8 +3,6 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import classroom
-from .database import engine, Base, SessionLocal
-from .models import Month
 
 app = FastAPI(title="AI Engineer Classroom API")
 
@@ -27,8 +25,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-Base.metadata.create_all(bind=engine)
-
 @app.on_event("startup")
 def startup_event():
     try:
@@ -36,12 +32,9 @@ def startup_event():
         if backend_dir not in sys.path:
             sys.path.append(backend_dir)
         from seed_roadmap import seed_database
-        db = SessionLocal()
-        try:
-            if not db.query(Month).first():
-                seed_database()
-        finally:
-            db.close()
+        from app.database import db
+        if db["months"].count_documents({}) == 0:
+            seed_database()
     except Exception:
         import traceback
         traceback.print_exc()
